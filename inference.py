@@ -1,10 +1,46 @@
 from PIL import Image
 import torch
-import fire
 
 from processing_inputs import PaliGemmaProcessor
-from model import KVCache, PaliGemmaForConditionalGeneration
-from utils import load_hf_model
+from model import KVCache, PaliGemmaForConditionalGeneration, PaliGemmaConfig
+from transformers import AutoTokenizer
+import json
+import glob
+from safetensors import safe_open
+from typing import Tuple
+import os
+
+def load_hf_model(model_path: str, device: str) -> Tuple[PaliGemmaForConditionalGeneration, AutoTokenizer]:
+    # Load the tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(model_path, padding_side="right")
+    assert tokenizer.padding_side == "right"
+
+    # Find all the *.safetensors files
+    safetensors_files = glob.glob(os.path.join(model_path, "*.safetensors"))
+
+    # ... and load them one by one in the tensors dictionary
+    tensors = {}
+    for safetensors_file in safetensors_files:
+        with safe_open(safetensors_file, framework="pt", device="cpu") as f:
+            for key in f.keys():
+                tensors[key] = f.get_tensor(key)
+
+    # Load the model's config
+    with open(os.path.join(model_path, "config.json"), "r") as f:
+        model_config_file = json.load(f)
+        config = PaliGemmaConfig(**model_config_file)
+
+    # Create the model using the configuration
+    model = PaliGemmaForConditionalGeneration(config).to(device)
+
+    # Load the state dict of the model
+    model.load_state_dict(tensors, strict=False)
+
+    # Tie weights
+    model.tie_weights()
+
+    return (model, tokenizer)
+
 
 
 def move_inputs_to_device(model_inputs: dict, device: str):
@@ -79,7 +115,9 @@ def test_inference(
     # Decode the generated tokens
     decoded = processor.tokenizer.decode(generated_tokens, skip_special_tokens=True)
 
-    print(prompt + decoded)
+    print(decoded)
+
+    # print(prompt + decoded)
 
 
 def _sample_top_p(probs: torch.Tensor, p: float):
@@ -139,3 +177,14 @@ def main(
             do_sample,
         )
 
+
+if __name__ == "__main__":
+    main(
+        model_path = "",
+        prompt = "There is a cat ",
+        image_file_path = "cat_meme.png",
+        max_tokens_to_generate = 300,
+        temperature = 1.0,
+        top_p = 0.9,
+        do_sample = False,
+    )
