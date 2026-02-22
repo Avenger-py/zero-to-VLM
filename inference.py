@@ -24,6 +24,24 @@ def load_hf_model(model_path: str, device: str) -> Tuple[PaliGemmaForConditional
         with safe_open(safetensors_file, framework="pt", device="cpu") as f:
             for key in f.keys():
                 tensors[key] = f.get_tensor(key)
+    
+
+    def remap_keys(tensors: dict) -> dict:
+        remapped = {}
+        for k, v in tensors.items():
+            new_k = k
+            # Example remapping - adjust based on actual key names
+            new_k = new_k.replace("vision_model.", "model.")
+            new_k = new_k.replace("q_proj.", "wq.")
+            new_k = new_k.replace("k_proj.", "wk.")
+            new_k = new_k.replace("v_proj.", "wv.")
+            new_k = new_k.replace("position_embedding.", "pos_embeddings.")
+            new_k = new_k.replace("post_layernorm.", "layer_norm.")
+            remapped[new_k] = v
+        return remapped
+
+    tensors = remap_keys(tensors)
+    
 
     # Load the model's config
     with open(os.path.join(model_path, "config.json"), "r") as f:
@@ -36,8 +54,28 @@ def load_hf_model(model_path: str, device: str) -> Tuple[PaliGemmaForConditional
     # Load the state dict of the model
     model.load_state_dict(tensors, strict=False)
 
+
+    # Verify vision tower is now loading correctly
+    # model_keys = set(model.state_dict().keys())
+    # tensor_keys = set(tensors.keys())
+    # still_missing = model_keys - tensor_keys
+    # vision_still_missing = [k for k in still_missing if 'vision' in k]
+    # print(f"Vision keys still missing: {len(vision_still_missing)}")
+    # if vision_still_missing:
+    #     print("Sample still missing:", vision_still_missing[:5])
+    #     print("\nSample checkpoint vision keys:", [k for k in tensor_keys if 'vision' in k][:5])
+
+
+
     # Tie weights
     model.tie_weights()
+
+    # See all top-level named modules
+    # for name, module in model.named_children():
+    #     print(name, type(module).__name__)
+
+    # print(model.language_model.lm_head.weight.data_ptr() == model.language_model.embed_tokens.weight.data_ptr())
+
 
     return (model, tokenizer)
 
@@ -115,9 +153,9 @@ def test_inference(
     # Decode the generated tokens
     decoded = processor.tokenizer.decode(generated_tokens, skip_special_tokens=True)
 
-    print(decoded)
+    # print(decoded)
 
-    # print(prompt + decoded)
+    print(prompt + decoded)
 
 
 def _sample_top_p(probs: torch.Tensor, p: float):
