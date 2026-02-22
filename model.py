@@ -46,11 +46,11 @@ class SiglipVisionModel(nn.Module):
     def __init__(self, config: SiglipVisionConfig):
         super().__init__()
         self.config = config
-        self.model = SiglipVisionTransformer(config)
-    
-    def forward(self, pixel_values):
-        # [Batch, ch, h, w] --> [batch, num_patches, embed_dim]
-        return self.model(pixel_values=pixel_values)
+        self.vision_model = SiglipVisionTransformer(config)
+
+    def forward(self, pixel_values) -> Tuple:
+        # [Batch_Size, Channels, Height, Width] -> [Batch_Size, Num_Patches, Embed_Dim]
+        return self.vision_model(pixel_values=pixel_values)
 
 
 class SiglipVisionTransformer(nn.Module):
@@ -60,17 +60,17 @@ class SiglipVisionTransformer(nn.Module):
     """
     def __init__(self, config: SiglipVisionConfig):
         super().__init__()
-        self.embed_dim = config.hidden_size
-        self.embeddings = SigLipVisionEmbeddings(config)
+        embed_dim = config.hidden_size
+        self.embeddings = SiglipVisionEmbeddings(config)
         self.encoder = SiglipEncoder(config)
-        self.layer_norm = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_eps)
+        self.post_layernorm = nn.LayerNorm(embed_dim, eps=config.layer_norm_eps)
     
     def forward(self, pixel_values):
         hidden_states = self.embeddings(pixel_values)
 
         last_hidden_state = self.encoder(hidden_states)
 
-        return self.layer_norm(last_hidden_state)
+        return self.post_layernorm(last_hidden_state)
 
 
 class SiglipEncoder(nn.Module):
@@ -87,7 +87,7 @@ class SiglipEncoder(nn.Module):
         return input_embeds
 
 
-class SigLipMLP(nn.Module):
+class SiglipMLP(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.embed_dim = config.hidden_size
@@ -107,13 +107,13 @@ class SiglipEncoderLayer(nn.Module):
         self.layer_norm1 = nn.LayerNorm(self.embed_dim)
         self.self_attn = SiglipAttention(config)
         self.layer_norm2 = nn.LayerNorm(self.embed_dim)
-        self.mlp = SigLipMLP(config)
+        self.mlp = SiglipMLP(config)
     
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         residual = hidden_states
 
         hidden_states = self.layer_norm1(hidden_states)
-        hidden_states = self.self_attn(hidden_states)
+        hidden_states, _ = self.self_attn(hidden_states)
 
         hidden_states = hidden_states + residual
 
@@ -136,9 +136,9 @@ class SiglipAttention(nn.Module):
         self.head_dim = self.embed_dim // self.num_heads
         self.dropout = config.attention_dropout
 
-        self.wq = nn.Linear(self.embed_dim, self.embed_dim, bias=False)
-        self.wk = nn.Linear(self.embed_dim, self.embed_dim, bias=False)
-        self.wv = nn.Linear(self.embed_dim, self.embed_dim, bias=False)
+        self.wq = nn.Linear(self.embed_dim, self.embed_dim, bias=True)
+        self.wk = nn.Linear(self.embed_dim, self.embed_dim, bias=True)
+        self.wv = nn.Linear(self.embed_dim, self.embed_dim, bias=True)
 
         self.out_proj = nn.Linear(self.embed_dim, self.embed_dim)
     
@@ -165,7 +165,7 @@ class SiglipAttention(nn.Module):
         attn = torch.matmul(q, k.transpose(-2, -1)) *  (self.head_dim ** -0.5)
 
         # B, num_heads, num_patches, num_patches
-        attn = F.softmax(attn, dim=-1)
+        attn = F.softmax(attn, dim=-1, dtype=torch.float32).to(q.dtype)
 
         # Apply dropout only during training
         attn = F.dropout(attn, p=self.dropout, training=self.training)
@@ -179,10 +179,10 @@ class SiglipAttention(nn.Module):
         # B, num_patches, D
         attn = self.out_proj(attn)
 
-        return attn
+        return attn, attn
 
 
-class SigLipVisionEmbeddings(nn.Module):
+class SiglipVisionEmbeddings(nn.Module):
     "Image --> patches using convolutions --> flatten + positional encoding --> image embeddings"
     def __init__(self, config: SiglipVisionConfig):
         super().__init__()
@@ -212,7 +212,7 @@ class SigLipVisionEmbeddings(nn.Module):
         # 4. nn.Embed also allows the gradient to ignore magnitude of indices as 
         #    there just IDs not numbers affecting gradients
         
-        self.pos_embeddings = nn.Embedding(self.num_patches, self.embed_dim)
+        self.position_embedding = nn.Embedding(self.num_patches, self.embed_dim)
 
         self.register_buffer(
             "position_ids",
@@ -227,16 +227,16 @@ class SigLipVisionEmbeddings(nn.Module):
         # [BS, embed_dim, num_patches] --> [BS, num_patches, embed_dim]
         patch_embeddings = patch_embeddings.transpose(2, 1)
 
-        pos_embeddings = self.pos_embeddings(self.position_ids)
+        pos_embeddings = self.position_embedding(self.position_ids)
 
         return patch_embeddings + pos_embeddings
 
 
-#######################################################################################
-#                                                                                     #
-#                                  GEMMA MODEL                                        #
-#                                                                                     #
-#######################################################################################
+# #######################################################################################
+# #                                                                                     #
+# #                                  GEMMA MODEL                                        #
+# #                                                                                     #
+# #######################################################################################
 
 
 class KVCache():
@@ -784,3 +784,70 @@ class PaliGemmaForConditionalGeneration(nn.Module):
         )
 
         return outputs
+
+
+# class SiglipAttention(nn.Module):
+#     """Multi-headed attention from 'Attention Is All You Need' paper"""
+
+#     def __init__(self, config):
+#         super().__init__()
+#         self.config = config
+#         self.embed_dim = config.hidden_size
+#         self.num_heads = config.num_attention_heads
+#         self.head_dim = self.embed_dim // self.num_heads
+#         self.scale = self.head_dim**-0.5 # Equivalent to 1 / sqrt(self.head_dim)
+#         self.dropout = config.attention_dropout
+
+#         self.k_proj = nn.Linear(self.embed_dim, self.embed_dim)
+#         self.v_proj = nn.Linear(self.embed_dim, self.embed_dim)
+#         self.q_proj = nn.Linear(self.embed_dim, self.embed_dim)
+#         self.out_proj = nn.Linear(self.embed_dim, self.embed_dim)
+
+#     def forward(
+#         self,
+#         hidden_states: torch.Tensor,
+#     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+
+#         # hidden_states: [Batch_Size, Num_Patches, Embed_Dim]
+#         batch_size, seq_len, _ = hidden_states.size()
+#         # query_states: [Batch_Size, Num_Patches, Embed_Dim]
+#         query_states = self.q_proj(hidden_states)
+#         # key_states: [Batch_Size, Num_Patches, Embed_Dim]
+#         key_states = self.k_proj(hidden_states)
+#         # value_states: [Batch_Size, Num_Patches, Embed_Dim]
+#         value_states = self.v_proj(hidden_states)
+#         # query_states: [Batch_Size, Num_Heads, Num_Patches, Head_Dim]
+#         query_states = query_states.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+
+#         key_states = key_states.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+
+#         value_states = value_states.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+#         # Calculate the attention using the formula Q * K^T / sqrt(d_k). attn_weights: [Batch_Size, Num_Heads, Num_Patches, Num_Patches]
+#         attn_weights = (torch.matmul(query_states, key_states.transpose(2, 3)) * self.scale)
+
+#         if attn_weights.size() != (batch_size, self.num_heads, seq_len, seq_len):
+#             raise ValueError(
+#                 f"Attention weights should be of size {(batch_size, self.num_heads, seq_len, seq_len)}, but is"
+#                 f" {attn_weights.size()}"
+#             )
+
+#         # Apply the softmax row-wise. attn_weights: [Batch_Size, Num_Heads, Num_Patches, Num_Patches]
+#         attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
+#         # Apply dropout only during training
+#         attn_weights = nn.functional.dropout(attn_weights, p=self.dropout, training=self.training)
+#         # Multiply the attention weights by the value states. attn_output: [Batch_Size, Num_Heads, Num_Patches, Head_Dim]
+#         attn_output = torch.matmul(attn_weights, value_states)
+
+#         if attn_output.size() != (batch_size, self.num_heads, seq_len, self.head_dim):
+#             raise ValueError(
+#                 f"`attn_output` should be of size {(batch_size, self.num_heads, seq_len, self.head_dim)}, but is"
+#                 f" {attn_output.size()}"
+#             )
+#         # [Batch_Size, Num_Heads, Num_Patches, Head_Dim] -> [Batch_Size, Num_Patches, Num_Heads, Head_Dim]
+#         attn_output = attn_output.transpose(1, 2).contiguous()
+#         # [Batch_Size, Num_Patches, Num_Heads, Head_Dim] -> [Batch_Size, Num_Patches, Embed_Dim]
+#         attn_output = attn_output.reshape(batch_size, seq_len, self.embed_dim)
+#         # [Batch_Size, Num_Patches, Embed_Dim]
+#         attn_output = self.out_proj(attn_output)
+
+#         return attn_output, attn_weights

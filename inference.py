@@ -31,12 +31,12 @@ def load_hf_model(model_path: str, device: str) -> Tuple[PaliGemmaForConditional
         for k, v in tensors.items():
             new_k = k
             # Example remapping - adjust based on actual key names
-            new_k = new_k.replace("vision_model.", "model.")
+            # new_k = new_k.replace("vision_model.", "model.")
             new_k = new_k.replace("q_proj.", "wq.")
             new_k = new_k.replace("k_proj.", "wk.")
             new_k = new_k.replace("v_proj.", "wv.")
-            new_k = new_k.replace("position_embedding.", "pos_embeddings.")
-            new_k = new_k.replace("post_layernorm.", "layer_norm.")
+            # new_k = new_k.replace("position_embedding.", "pos_embeddings.")
+            # new_k = new_k.replace("post_layernorm.", "layer_norm.")
             remapped[new_k] = v
         return remapped
 
@@ -218,8 +218,8 @@ def main(
 
 if __name__ == "__main__":
     main(
-        model_path = "",
-        prompt = "There is a cat ",
+        model_path = "/root/.cache/huggingface/hub/models--google--paligemma-3b-mix-224/snapshots/d1d8734c9c3ad0ccfeea4afc270faa356c2ba515",
+        prompt = "caption en",
         image_file_path = "cat_meme.png",
         max_tokens_to_generate = 300,
         temperature = 1.0,
